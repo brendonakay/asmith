@@ -29,6 +29,76 @@ from sklearn.svm import SVC
 from sklearn.qda import QDA
 from dateutil import parser
 from backtest import Strategy, Portfolio
+from abc import ABCMeta, abstractmethod
+
+
+class MarketIntradayPortfolio(Portfolio):
+    """Buys or sells 500 shares of an asset at the opening price of
+    every bar, depending upon the direction of the forecast, closing 
+    out the trade at the close of the bar.
+
+    Requires:
+    symbol - A stock symbol which forms the basis of the portfolio.
+    bars - A DataFrame of bars for a symbol set.
+    signals - A pandas DataFrame of signals (1, -1) for each symbol.
+    initial_capital - The amount in cash at the start of the portfolio."""
+
+    def __init__(self, symbol, bars, signals, initial_capital=100000.0, shares=500):
+        self.symbol = symbol        
+        self.bars = bars
+        self.signals = signals
+        self.initial_capital = float(initial_capital)
+        self.shares = int(shares)
+        self.positions = self.generate_positions()
+        
+    def generate_positions(self):
+        """Generate the positions DataFrame, based on the signals
+        provided by the 'signals' DataFrame."""
+        positions = pd.DataFrame(index=self.signals.index).fillna(0.0)
+
+        positions[self.symbol] = self.shares*self.signals['signal']
+        return positions
+                    
+    def backtest_portfolio(self):
+        """Backtest the portfolio and return a DataFrame containing
+        the equity curve and the percentage returns."""
+       
+        portfolio = pd.DataFrame(index=self.positions.index)
+        pos_diff = self.positions.diff()
+            
+        portfolio['price_diff'] = self.bars['Close_Out']-self.bars['Open_Out']
+        portfolio['price_diff'][0:5] = 0.0
+        portfolio['profit'] = self.positions[self.symbol] * portfolio['price_diff']
+     
+        portfolio['total'] = self.initial_capital + portfolio['profit'].cumsum()
+        portfolio['returns'] = portfolio['total'].pct_change()
+        return portfolio
+
+
+class Portfolio(object):
+    """An abstract base class representing a portfolio of 
+    positions (including both instruments and cash), determined
+    on the basis of a set of signals provided by a Strategy."""
+
+    __metaclass__ = ABCMeta
+
+    @abstractmethod
+    def generate_positions(self):
+        """Provides the logic to determine how the portfolio 
+        positions are allocated on the basis of forecasting
+        signals and available cash."""
+        raise NotImplementedError("Should implement generate_positions()!")
+
+    @abstractmethod
+    def backtest_portfolio(self):
+        """Provides the logic to generate the trading orders
+        and subsequent equity curve (i.e. growth of total equity),
+        as a sum of holdings and cash, and the bar-period returns
+        associated with this curve based on the 'positions' DataFrame.
+
+        Produces a portfolio object that can be examined by 
+        other classes/functions."""
+        raise NotImplementedError("Should implement backtest_portfolio()!")
 
 
 def getStock(symbol, start, end):
@@ -333,3 +403,88 @@ def performFeatureSelection(maxdeltas, maxlags, fout, cut, start_test, path_data
             
             print performCV(X_train, y_train, folds, method, parameters, fout, savemodel)
             print ''
+
+
+def getPredictionFromBestModel(bestdelta, bestlags, fout, cut, start_test, path_datasets, best_model):
+    """
+    returns array of prediction and score from best model.
+    """
+    lags = range(2, bestlags + 1) 
+    datasets = loadDatasets(path_datasets, fout)
+    delta = range(2, bestdelta + 1) 
+    datasets = applyRollMeanDelayedReturns(datasets, delta)
+    finance = mergeDataframes(datasets, 6, cut)
+    finance = finance.interpolate(method='linear')
+    finance = finance.fillna(finance.mean())    
+    finance = applyTimeLag(finance, lags, delta)
+    X_train, y_train, X_test, y_test  = prepareDataForClassification(finance, start_test)    
+    with open(best_model, 'rb') as fin:
+        model = cPickle.load(fin)        
+        
+    return model.predict(X_test), model.score(X_test, y_test)
+
+
+# last trading day accounted
+end_period = datetime.datetime(2014,8,28)
+
+# symbol of the stock required for future plotting
+symbol = 'S&P-500'
+
+# name of the file of the output of prediction (S&P 500 in this case)
+name = path_datasets + '/sp500.csv'
+
+# calls the best model previously saved in pickle file and runs it on the test set retutning an array of 0,1 (Down, Up) according to predicted returns
+prediction = pystocks.getPredictionFromBestModel(9, 9, 'sp500', cut, start_test, path_datasets, 'sp500_57.pickle')[0]
+
+# dataframe of S&P 500 historical prices (saved locally from Yahho Finance)
+bars = pd.read_csv(name, index_col=0, parse_dates=True)    
+
+# subset of the data corresponding to test set
+bars = bars[start_test:end_period]
+
+# initialize empty dataframe indexed as the bars. There's going to be perfect match between dates in bars and signals 
+signals = pd.DataFrame(index=bars.index)
+
+# initialize signals.signal column to zero
+signals['signal'] = 0.0
+
+# copying into signals.signal column results of prediction
+signals['signal'] = prediction
+
+# replace the zeros with -1 (new encoding for Down day)
+signals.signal[signals.signal == 0] = -1
+
+# compute the difference between consecutive entries in signals.signal. As
+# signals.signal was an array of 1 and -1 return signals.positions will 
+# be an array of 0s and 2s.
+signals['positions'] = signals['signal'].diff()     
+
+# calling portfolio evaluation on signals (predicted returns) and bars 
+# (actual returns)
+portfolio = pystocks.MarketIntradayPortfolio(symbol, bars, signals)
+
+# backtesting the portfolio and generating returns on top of that 
+returns = portfolio.backtest_portfolio()
+
+# Plot results
+f, ax = plt.subplots(2, sharex=True)
+f.patch.set_facecolor('white')
+ylabel = symbol + ' Close Price in $'
+bars['Close_Out'].plot(ax=ax[0], color='r', lw=3.)    
+ax[0].set_ylabel(ylabel, fontsize=18)
+ax[0].set_xlabel('', fontsize=18)
+ax[0].legend(('Close Price S&P-500',), loc='upper left', prop={"size":18})
+ax[0].set_title('S&P 500 Close Price VS Portofolio Performance (1 April 2014 - 28 August 2014)', fontsize=20, fontweight="bold")
+
+returns['total'].plot(ax=ax[1], color='b', lw=3.)  
+ax[1].set_ylabel('Portfolio value in $', fontsize=18)
+ax[1].set_xlabel('Date', fontsize=18)
+ax[1].legend(('Portofolio Performance. Capital Invested: 100k $. Shares Traded per day: 500+500',), loc='upper left', prop={"size":18})            
+plt.tick_params(axis='both', which='major', labelsize=14)
+loc = ax[1].xaxis.get_major_locator()
+loc.maxticks[DAILY] = 24
+
+figManager = plt.get_current_fig_manager()
+figManager.window.showMaximized()
+
+plt.show()
