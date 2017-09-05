@@ -13,13 +13,16 @@ http://francescopochetti.com/stock-market-prediction-part-introduction/
 '''
 
 import re
-import Quandl
+import quandl
 import cPickle
 import numpy as np
 import pandas as pd
-import pandas.io.data
+import pandas_datareader
+from pandas_datareader import data, wb
 import datetime
 import operator
+import sklearn
+import bt
 from datetime import datetime
 from sklearn import preprocessing, neighbors
 from sklearn.ensemble import RandomForestClassifier
