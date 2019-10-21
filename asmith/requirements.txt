@@ -30,4 +30,4 @@ sklearn==0.0
 subprocess32==3.2.7
 tabulate==0.7.7
 unity-lens-photos==1.0
-urllib3==1.21.1
+urllib3==1.24.2
